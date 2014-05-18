@@ -1,0 +1,594 @@
+<?php
+
+/**
+ * CakePHP Wordpress Datasource
+ *
+ * PHP 5
+ *
+ *
+ * Angel S. Moreno : Environment Switching class for CakePHP
+ * Copyright 2013, Angel S. Moreno (http://github.com/angelxmoreno)
+ *
+ * Licensed under The MIT License
+ * Redistributions of files must retain the above copyright notice.
+ *
+ * @copyright	Copyright 2013, Angel S. Moreno (http://github.com/angelxmoreno)
+ * @license	MIT License (http://www.opensource.org/licenses/mit-license.php)
+ * @link https://github.com/angelxmoreno/CakePHP-Wordpress-Datasource CakePHP-Wordpress-Datasource
+ *
+ * @package       datasources
+ * @subpackage    datasources.models.datasources
+ * @file	WordpressSource.php
+ *
+ *  * Create a datasource in your config/database.php
+ *  public $wordpress = array(
+ * 	'datasource' => 'WordpressSource.WordpressSource',
+ * 	'host' => 'example.com',
+ * 	'path' => '/xml-rpc.php',
+ * 	'port' => 80,
+ * 	'timeout' => 15,
+ * 	'username' => null,
+ * 	'password' => null,
+ * 	'blog_id' => 0
+ *  );
+ *
+ */
+App::uses('DataSource', 'Model/Datasource');
+App::uses('HttpSocket', 'Network/Http');
+App::import('Vendor', 'WordpressManager.IXR_Client', array('file' => 'IXR_Library.php'));
+
+/**
+ * WordpressSource
+ *
+ * Datasource for Wordpress API using XML-RPC
+ *
+ * @property HttpSocket $_http
+ * @property IXR_Client $_client
+ */
+class WordpressSource extends DataSource {
+
+    /**
+     * Description string for this Data Source.
+     *
+     * @var string
+     */
+    public $description = 'Wordpress Datasource';
+
+    /**
+     * HttpSocket Object
+     *
+     * @var object HttpSocket
+     */
+    protected $_http;
+
+    /**
+     * IXR_Client Object
+     *
+     * @var object IXR_Client
+     */
+    protected $_client;
+
+    /**
+     * The DataSource configuration
+     *
+     * @var array
+     */
+    public $config = array();
+
+    /**
+     * Configuration base
+     *
+     * @var array
+     */
+    public $_baseConfig = array(
+        'host' => 'example.com',
+        'path' => '/xml-rpc.php',
+        'port' => 80,
+        'timeout' => 15,
+        'username' => null,
+        'password' => null,
+        'blog_id' => 0
+    );
+
+    /**
+     * Last error found
+     *
+     * @var array
+     */
+    public $error;
+
+    /**
+     * Holds a list of sources (tables) contained in the DataSource snd the
+     * corresponding fields
+     *
+     * @var array
+     */
+    protected $_sources = array(
+        'posts' => array(
+            'post_id' => array('type' => 'biginteger', 'null' => false, 'default' => null, 'key' => 'primary'),
+            'post_title' => array('type' => 'text', 'null' => false, 'default' => null, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'post_date' => array('type' => 'datetime', 'null' => false, 'default' => '0000-00-00 00:00:00'),
+            'post_date_gmt' => array('type' => 'datetime', 'null' => false, 'default' => '0000-00-00 00:00:00'),
+            'post_modified' => array('type' => 'datetime', 'null' => false, 'default' => '0000-00-00 00:00:00'),
+            'post_modified_gmt' => array('type' => 'datetime', 'null' => false, 'default' => '0000-00-00 00:00:00'),
+            'post_status' => array('type' => 'string', 'null' => false, 'default' => 'publish', 'length' => 20, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'post_type' => array('type' => 'string', 'null' => false, 'default' => 'post', 'length' => 20, 'key' => 'index', 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            //post_format ?
+            'post_name' => array('type' => 'string', 'null' => false, 'length' => 200, 'key' => 'index', 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'post_author' => array('type' => 'biginteger', 'null' => false, 'default' => '0', 'key' => 'index'),
+            'post_password' => array('type' => 'string', 'null' => false, 'length' => 20, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'post_excerpt' => array('type' => 'text', 'null' => false, 'default' => null, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'post_content' => array('type' => 'text', 'null' => false, 'default' => null, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'post_parent' => array('type' => 'biginteger', 'null' => false, 'default' => '0', 'key' => 'index'),
+            'post_mime_type' => array('type' => 'string', 'null' => false, 'length' => 100, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            //link ?
+            'guid' => array('type' => 'string', 'null' => false, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'menu_order' => array('type' => 'integer', 'null' => false, 'default' => '0'),
+            'comment_status' => array('type' => 'string', 'null' => false, 'default' => 'open', 'length' => 20, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+            'ping_status' => array('type' => 'string', 'null' => false, 'default' => 'open', 'length' => 20, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+        //sticky ?
+        /*
+          'to_ping' => array('type' => 'text', 'null' => false, 'default' => null, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+          'pinged' => array('type' => 'text', 'null' => false, 'default' => null, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+          'post_content_filtered' => array('type' => 'text', 'null' => false, 'default' => null, 'collate' => 'utf8_general_ci', 'charset' => 'utf8'),
+          'comment_count' => array('type' => 'biginteger', 'null' => false, 'default' => '0'),
+          'indexes' => array(
+          'PRIMARY' => array('column' => 'ID', 'unique' => 1),
+          'post_name' => array('column' => 'post_name', 'unique' => 0),
+          'type_status_date' => array('column' => array('post_type', 'post_status', 'post_date', 'ID'), 'unique' => 0),
+          'post_parent' => array('column' => 'post_parent', 'unique' => 0),
+          'post_author' => array('column' => 'post_author', 'unique' => 0)
+          ),
+          'tableParameters' => array('charset' => 'utf8', 'collate' => 'utf8_general_ci', 'engine' => 'InnoDB'),
+         */
+        ),
+        'taxonomies',
+        'comments',
+        'users',
+        'pages'
+    );
+
+    /**
+     * List of valid methods when calling the Wordpress XML-RPC Server
+     *
+     * @var array
+     */
+    protected $_methods = array(
+        //Posts
+        'wp.getPost',
+        'wp.getPosts',
+        'wp.newPost',
+        'wp.editPost',
+        'wp.deletePost',
+        'wp.getPostType',
+        'wp.getPostTypes',
+        'wp.getPostFormats',
+        'wp.getPostStatusList',
+        //Taxonomies
+        'wp.getTaxonomy',
+        'wp.getTaxonomies',
+        'wp.getTerm',
+        'wp.getTerms',
+        'wp.newTerm',
+        'wp.editTerm',
+        'wp.deleteTerm',
+        //Media
+        'wp.getMediaItem',
+        'wp.getMediaLibrary',
+        'wp.uploadFile',
+        //Comments
+        'wp.getCommentCount',
+        'wp.getComment',
+        'wp.getComments',
+        'wp.newComment',
+        'wp.editComment',
+        'wp.deleteComment',
+        'wp.getCommentStatusList',
+        //Options
+        'wp.getOptions',
+        'wp.setOptions',
+        //Users
+        'wp.getUsersBlogs',
+        'wp.getUser',
+        'wp.getUsers',
+        'wp.getProfile',
+        'wp.editProfile',
+        'wp.getAuthors',
+        
+        //pages
+        'wp.getPage',
+        'wp.getPages',
+        'wp.newPage',
+        'wp.editPage',
+        'wp.deletePage'
+    );
+
+    /**
+     * Default Constructor
+     *
+     * @param array $config options
+     */
+    public function __construct($config = array()) {
+        parent::__construct($config);
+        //$this->_client = new IXR_Client($this->config['host'], $this->config['path'], $this->config['port'], $this->config['timeout']);
+    }
+
+    /**
+     * Reset IXR client
+     *
+     * @param array $config options
+     */
+    public function resetIXRClint($config = array()) {
+        if (!empty($config))
+            $this->config = $config;
+        $this->_client = new IXR_Client($this->config['host'], $this->config['path'], $this->config['port'], $this->config['timeout']);
+    }
+
+    /**
+     * Returns a list of sources available in this datasource.
+     *
+     * @param mixed $data
+     * @return array Array of sources available in this datasource.
+     */
+    public function listSources($data = null) {
+        return array_keys($this->_sources);
+    }
+
+    /**
+     * Gets full table name including prefix
+     *
+     * @param Model|string $model Either a Model object or a string table name.
+     * @param boolean $quote Whether you want the table name quoted.
+     * @param boolean $schema Whether you want the schema name included.
+     * @return string Full quoted table name
+     */
+    public function fullTableName($model) {
+        if (is_object($model)) {
+            $table = $model->tablePrefix . $model->table;
+        } else {
+            $table = strval($model);
+        }
+        return $table;
+    }
+
+    /**
+     * Returns an array of the fields in given table name.
+     *
+     * @param Model|string $model Name of database table to inspect or model instance
+     * @return array Fields in table. Keys are name and type
+     * @throws CakeException
+     */
+    public function describe($model) {
+        $table = $this->fullTableName($model);
+        return $this->_sources[$table];
+    }
+
+    /**
+     * Perform an XML RPC call
+     *
+     * @param string $method compatible XML-RPC WordPress API method
+     * @param array $params parameters to query
+     * @return mixed Response of Wordpress XML-RPC Server. If return false, $this->error contain a error message.
+     */
+    public function query($method, $params = array()) {
+        $args = func_get_args();
+        $method = array_shift($args);
+        if (!in_array($method, $this->_methods)) {
+            $this->_setError(900, 'The method ' . (string) $method . ' is not a valid method');
+            return false;
+        }
+        if($method=='wp.editPage' || $method=='wp.getPage'){
+            $id = array_shift($args);
+            if (!call_user_func_array(array($this->_client, 'query'), array_merge_recursive(array($method, '',$id, $this->config['username'], $this->config['password']), $args))) {
+               $this->_setError($this->_client->getErrorCode(), $this->_client->getErrorMessage());
+               return false;
+            }   
+        }  else {
+            if (!call_user_func_array(array($this->_client, 'query'), array_merge_recursive(array($method, '', $this->config['username'], $this->config['password']), $args))) {
+                $this->_setError($this->_client->getErrorCode(), $this->_client->getErrorMessage());
+                return false;
+            }
+        }
+        
+        return $this->_client->getResponse();
+    }
+
+    public function parseResponse(Array $response) {
+        $_response = null;
+        foreach ($response as $key => $val) {
+            if ($val instanceof IXR_Date) {
+                $_response[$key] = date('Y-m-d H:i:s', $val->getTimestamp());
+            } elseif (is_array($val) || is_object($val)) {
+                $_response[$key] = $this->parseResponse($val);
+            } else {
+                $_response[$key] = $val;
+            }
+        }
+        return $_response;
+    }
+
+    /**
+     * Set a error message and number
+     *
+     * @param integer $errno Number of error
+     * @param string $errmsg Description of error
+     * @return boolean Always false
+     */
+    protected function _setError($errno, $errmsg) {
+        $this->error = array(
+            'message' => $errmsg,
+            'errno' => $errno
+        );
+        throw new CacheException($errmsg, $errno);
+        return false;
+    }
+
+    /**
+     * Helper functions
+     *
+     * Apparently if you pass an empty array of $fields you get only the post_id.
+     * Also, if you pass a null value of $fields you get parse error
+     */
+
+    /**
+     * Retrieve a post of any registered post type
+     *
+     * @link http://codex.wordpress.org/XML-RPC_WordPress_API/Posts#wp.getPost
+     * @param integer $post_id
+     * @param array $fields Optional list of field or meta-field names to include in response.
+     * @return mixed Response of Wordpress XML-RPC Server. If return false, $this->error contain a error message.
+     */
+    public function getPost($post_id, array $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getPost', $post_id, $fields);
+        } else {
+            return $this->query('wp.getPost', $post_id);
+        }
+    }
+
+    /**
+     * Retrieve list of posts of any registered post type
+     * NOTE: Response will only contain posts that the user has permission to edit. Therefore, there may be fewer than filter['number'] posts in the response.
+     *
+     * The $filter array follows this structure:
+     * string post_type
+     * string post_status
+     * integer number
+     * integer offset
+     * string orderby
+     * string order
+     *
+     * @link http://codex.wordpress.org/XML-RPC_WordPress_API/Posts#wp.getPosts
+     * @param array $filter Optional filters. When none are set ( an empty array ) all posts are returned
+     * @param array $fields Optional list of field or meta-field names to include in response.
+     * @return mixed Response of Wordpress XML-RPC Server. If return false, $this->error contain a error message.
+     */
+    public function getPosts(array $filter = array(), array $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getPosts', $filter, $fields);
+        } else {
+            return $this->query('wp.getPosts', $filter);
+        }
+    }
+
+    /**
+     * Create a new post of any registered post type
+     *
+     * The $post array follows this structure:
+     * array $content
+     * string $post_type
+     * string $post_status
+     * string $post_title
+     * integer $post_author
+     * string $post_excerpt
+     * string $post_content
+     * datetime $post_date_gmt | $post_date
+     * string $post_format
+     * string $post_name
+     * string $post_password
+     * string $comment_status
+     * string $ping_status
+     * bool $sticky
+     * integer $post_thumbnail
+     * integer $post_parent
+     * array $custom_fields
+     * 	string $key
+     * 	string $value
+     * array $terms: Taxonomy names as keys, array of term IDs as values.
+     * array $terms_names: Taxonomy names as keys, array of term names as values.
+     * array $enclosure
+     * string $url
+     * integer $length
+     * string $type
+     *
+     * @link http://codex.wordpress.org/XML-RPC_WordPress_API/Posts#wp.newPost
+     * @param array $post
+     * @return string $post_id the newly created post id
+     */
+    public function newPost(array $post) {
+        $post_id = $this->query('wp.newPost', $post);
+        return $post_id;
+    }
+
+    /**
+     * Edit an existing post of any registered post type
+     *
+     * The $post array follows this structure:
+     * array $content
+     * string $post_type
+     * string $post_status
+     * string $post_title
+     * integer $post_author
+     * string $post_excerpt
+     * string $post_content
+     * datetime $post_date_gmt | $post_date
+     * string $post_format
+     * string $post_name
+     * string $post_password
+     * string $comment_status
+     * string $ping_status
+     * bool $sticky
+     * integer $post_thumbnail
+     * integer $post_parent
+     * array $custom_fields
+     * 	string $key
+     * 	string $value
+     * array $terms: Taxonomy names as keys, array of term IDs as values.
+     * array $terms_names: Taxonomy names as keys, array of term names as values.
+     * array $enclosure
+     * string $url
+     * integer $length
+     * string $type
+     *
+     * @link http://codex.wordpress.org/XML-RPC_WordPress_API/Posts#wp.editPost
+     * @param string $post_id
+     * @param array $post
+     * @return bool true
+     */
+    public function editPost($post_id, array $post) {
+        return $this->query('wp.editPost', $post_id, $post);
+    }
+
+    /**
+     * Delete an existing post of any registered post type
+     *
+     * @link http://codex.wordpress.org/XML-RPC_WordPress_API/Posts#wp.deletePost
+     * @param integer $post_id
+     * @return bool true
+     */
+    public function deletePost($post_id) {
+        return $this->query('wp.deletePost', $post_id);
+    }
+    /**
+     * Get taxonomies 
+     * 
+     * @param array $filter
+     * @param array $fields
+     * @return mixed
+     */
+    public function getTaxonomies($filter = array(), $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getTaxonomies', $filter, $fields);
+        } else {
+            return $this->query('wp.getTaxonomies', $filter);
+        }
+    }
+    /**
+     * Get terms
+     * 
+     * @param array $filter
+     * @param array $fields
+     * @return mixed
+     */
+    public function getTerms($taxonomy, array $fields = array()){
+        if ($fields) {
+            return $this->query('wp.getTerms', $taxonomy, $fields);
+        } else {
+            return $this->query('wp.getTerms', $taxonomy);
+        }
+    }
+    
+    public function getTerm($taxonomy, $term_id) {
+        return $this->query('wp.getTerm', $taxonomy, $term_id);
+    }
+    
+    public function newTerm(array $taxonomy = array()){
+        $term_id = $this->query('wp.newTerm', $taxonomy);
+        return $term_id;
+    }
+    
+    public function editTerm($term_id, array $taxonomy = array()){
+        return $this->query('wp.editTerm', $term_id, $taxonomy);
+    }
+    
+    public function deleteTerm($taxonomy, $term_id) {
+        return $this->query('wp.deleteTerm', $taxonomy, $term_id);
+    }
+    
+    /*
+     * Pages
+     */
+    public function getPages(array $filter = array(), array $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getPages', $filter, $fields);
+        } else {
+            return $this->query('wp.getPages', $filter);
+        }
+    }
+    public function getPage($page_id, array $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getPage', $page_id, $fields);
+        } else {
+            return $this->query('wp.getPage', $page_id);
+        }
+    }
+    public function newPage(array $page) {
+        $page_id = $this->query('wp.newPage', $page);
+        return $page_id;
+    }
+    
+    public function editPage($page_id, array $page) {
+        return $this->query('wp.editPage', $page_id, $page);
+    }
+    
+    public function deletePage($page_id) {
+        return $this->query('wp.deletePage', $page_id);
+    }
+    
+    /*
+     * Comments
+     */
+    public function getComments(array $filter = array(), array $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getComments', $filter, $fields);
+        } else {
+            return $this->query('wp.getComments', $filter);
+        }
+    }
+    
+    public function getComment($comment_id, array $fields = array()) {
+        if ($fields) {
+            return $this->query('wp.getComment', $comment_id, $fields);
+        } else {
+            return $this->query('wp.getComment', $comment_id);
+        }
+    }
+    public function newComment($post_id, array $comment) {
+        $page_id = $this->query('wp.newComment', $post_id, $comment);
+        return $page_id;
+    }
+    
+    public function editComment($comment_id, array $comment) {
+        return $this->query('wp.editComment', $comment_id, $comment);
+    }
+    
+    public function deleteComment($comment_id) {
+        return $this->query('wp.deleteComment', $comment_id);
+    }
+    
+    public function getCommentStatusList() {
+        return $this->query('wp.getCommentStatusList');
+    }
+    
+    public function getCommentCount($post_id){
+        return $this->query('wp.getCommentCount', $post_id);
+    }
+    
+    /*
+     * Media
+     */
+    public function getMediaLibrary(array $filter = array()) {
+        return $this->query('wp.getMediaLibrary', $filter);
+    }
+    public function getMediaItem($attachment_id) {
+        return $this->query('wp.getMediaItem', $attachment_id);
+    }
+    
+    public function uploadFile(array $data) {
+        return $this->query('wp.uploadFile', $data);
+    }
+    
+    public function getUploadEncodeObject($content){
+        return new IXR_Base64($content);
+    }
+}
